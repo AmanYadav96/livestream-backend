@@ -12,6 +12,7 @@ const { checkConnection, isDbConnected } = require('./config/db');
 const { runMigrations } = require('./migrations/migrate');
 const { apiLimiter }    = require('./middleware/rateLimiter');
 const { requestLogger } = require('./middleware/requestLogger');
+const { checkLaravelConnection } = require('./middleware/auth');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const logger            = require('./config/logger');
 
@@ -30,6 +31,11 @@ registerChatHandlers(io);
 
 // ── Global middleware ─────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',');
+
+// Always trust one reverse proxy (nginx on VPS). Set TRUST_PROXY=false to disable.
+if (process.env.TRUST_PROXY !== 'false') {
+  app.set('trust proxy', 1);
+}
 
 app.use(helmet());
 app.use(compression());
@@ -50,11 +56,12 @@ app.use(apiLimiter);
 app.get('/health', async (req, res) => {
   const dbHealth = await checkConnection();
   const socketStats = getSocketStats();
+  const laravelHealth = await checkLaravelConnection();
 
-  const allOk = dbHealth.connected && socketStats.running;
+  const allOk = dbHealth.connected && socketStats.running && laravelHealth.reachable;
   const status = allOk ? 'ok' : 'degraded';
 
-  logger.debug('Health check', { status, dbHealth, socketStats });
+  logger.debug('Health check', { status, dbHealth, socketStats, laravelHealth });
 
   res.status(allOk ? 200 : 503).json({
     status,
@@ -71,6 +78,11 @@ app.get('/health', async (req, res) => {
       },
       laravel: {
         url: process.env.LARAVEL_API_URL || 'not configured',
+        userPath: process.env.LARAVEL_USER_PATH || '/api/v2/profile-details',
+        reachable: laravelHealth.reachable,
+        latencyMs: laravelHealth.latencyMs,
+        ...(laravelHealth.httpStatus && { httpStatus: laravelHealth.httpStatus }),
+        ...(laravelHealth.error && { error: laravelHealth.error }),
       },
     },
   });
@@ -93,6 +105,9 @@ async function start() {
   logger.info('Starting livestream backend...', {
     nodeEnv: process.env.NODE_ENV || 'development',
     port: PORT,
+    trustProxy: process.env.TRUST_PROXY !== 'false',
+    laravelTlsInsecure: process.env.LARAVEL_TLS_INSECURE !== 'false'
+      && (process.env.LARAVEL_API_URL || '').startsWith('https://'),
   });
 
   const dbHealth = await checkConnection();

@@ -12,6 +12,8 @@ router.get('/:streamId/messages/pinned',    withStream, ctrl.getPinned);
 // Authenticated routes below
 router.use(authenticate);
 
+router.post('/:streamId/messages', withStream, ctrl.sendMessage);
+
 // Moderation — host/admin only
 router.patch('/:streamId/messages/:messageId/pin',    withStream, requireHost, ctrl.pinMessage);
 router.patch('/:streamId/messages/:messageId/unpin',  withStream, requireHost, ctrl.unpinMessage);

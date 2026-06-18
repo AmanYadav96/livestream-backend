@@ -1,118 +1,97 @@
-const axios  = require('axios');
-const db     = require('../config/db');
+const db = require('../config/db');
 const { getIO } = require('../config/socket');
-const logger = require('../config/logger');
+const {
+  yvFetch,
+  getPassage,
+  getVerseOfTheDay,
+  searchPassages,
+  getBibleIndex,
+  getChapterWithVerses,
+  purgeInvalidCache,
+} = require('../services/youversionApi');
 
-const YV_BASE  = process.env.YOUVERSION_API_BASE_URL || 'https://developers.youversion.com/1';
-const YV_TOKEN = process.env.YOUVERSION_TOKEN;
+purgeInvalidCache().catch(() => {});
 
-// ── Internal: YouVersion HTTP client with DB caching ─────────────────────────
-const yvClient = axios.create({
-  baseURL: YV_BASE,
-  headers: {
-    'X-YouVersion-Developer-Token': YV_TOKEN,
-    'Accept': 'application/json',
-  },
-  timeout: 10000,
-});
+const DEFAULT_BIBLE_ID = parseInt(process.env.YOUVERSION_DEFAULT_BIBLE_ID || '3034', 10);
 
-async function yvFetch(path) {
-  const cacheKey = `yv:${path}`;
-
-  // Check DB cache first
-  const { rows: cached } = await db.query(
-    `SELECT data FROM bible_cache WHERE cache_key = $1 AND expires_at > NOW()`,
-    [cacheKey]
-  );
-  if (cached.length) {
-    logger.debug(`Bible cache hit: ${cacheKey}`);
-    return cached[0].data;
-  }
-
-  // Fetch from YouVersion
-  const resp = await yvClient.get(path);
-  const data  = resp.data;
-
-  // Upsert into cache (24-hour TTL)
-  await db.query(
-    `INSERT INTO bible_cache (cache_key, data, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '24 hours')
-     ON CONFLICT (cache_key) DO UPDATE
-       SET data = EXCLUDED.data, expires_at = EXCLUDED.expires_at`,
-    [cacheKey, JSON.stringify(data)]
-  );
-
-  return data;
-}
-
-// ── GET Verse of the Day ──────────────────────────────────────────────────────
-// GET /bible/verse_of_the_day?version_id=1
-async function getVerseOfTheDay(req, res, next) {
+async function getVerseOfTheDayHandler(req, res, next) {
   try {
-    const versionId = req.query.version_id || 1; // 1 = KJV
-    const data = await yvFetch(`/verse_of_the_day?version_id=${versionId}`);
-    res.json({ verseOfTheDay: data });
+    const versionId = req.query.version_id || DEFAULT_BIBLE_ID;
+    const data = await getVerseOfTheDay(versionId);
+    res.json({ verseOfTheDay: { data } });
   } catch (err) {
     next(err);
   }
 }
 
-// ── GET list of available Bible versions ──────────────────────────────────────
-// GET /bible/versions
 async function getVersions(req, res, next) {
   try {
-    const data = await yvFetch('/versions');
-    res.json({ versions: data });
+    res.json({ versions: await yvFetch('/bibles?language_ranges[]=en&page_size=25') });
   } catch (err) {
     next(err);
   }
 }
 
-// ── GET a specific verse ───────────────────────────────────────────────────────
-// GET /bible/verses/:usfm?version_id=1
-// usfm example: JHN.3.16
 async function getVerse(req, res, next) {
   try {
-    const { usfm }      = req.params;
-    const versionId     = req.query.version_id || 1;
-    const data = await yvFetch(`/verses/${usfm}?version_id=${versionId}`);
-    res.json({ verse: data });
+    const { usfm } = req.params;
+    const versionId = req.query.version_id || DEFAULT_BIBLE_ID;
+    const passage = await getPassage(versionId, usfm);
+    res.json({ verse: { data: passage } });
   } catch (err) {
     next(err);
   }
 }
 
-// ── GET a full chapter ─────────────────────────────────────────────────────────
-// GET /bible/chapters/:usfm?version_id=1
-// usfm example: JHN.3
 async function getChapter(req, res, next) {
   try {
-    const { usfm }  = req.params;
-    const versionId = req.query.version_id || 1;
-    const data = await yvFetch(`/chapters/${usfm}?version_id=${versionId}`);
-    res.json({ chapter: data });
+    const { usfm } = req.params;
+    const versionId = req.query.version_id || DEFAULT_BIBLE_ID;
+    const parts = String(usfm || '').split('.');
+    if (parts.length >= 2) {
+      const chapter = await getChapterWithVerses(versionId, parts[0], parts[1]);
+      return res.json({ chapter: { data: chapter } });
+    }
+    const passage = await getPassage(versionId, usfm);
+    res.json({ chapter: { data: passage } });
   } catch (err) {
     next(err);
   }
 }
 
-// ── SEARCH verses ─────────────────────────────────────────────────────────────
-// GET /bible/search?q=love&version_id=1
+async function getIndex(req, res, next) {
+  try {
+    const versionId = req.query.version_id || DEFAULT_BIBLE_ID;
+    const index = await getBibleIndex(versionId);
+    res.json({ index });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getStructuredChapter(req, res, next) {
+  try {
+    const { bookUsfm, chapterNum } = req.params;
+    const versionId = req.query.version_id || DEFAULT_BIBLE_ID;
+    const chapter = await getChapterWithVerses(versionId, bookUsfm, chapterNum);
+    res.json({ chapter: { data: chapter } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function searchVerses(req, res, next) {
   try {
-    const { q, version_id = 1, page = 1 } = req.query;
+    const { q, version_id = DEFAULT_BIBLE_ID } = req.query;
     if (!q) return res.status(400).json({ error: 'Query parameter "q" is required' });
 
-    const data = await yvFetch(
-      `/search?q=${encodeURIComponent(q)}&version_id=${version_id}&page=${page}`
-    );
-    res.json({ results: data });
+    const results = await searchPassages(q, version_id);
+    res.json({ results });
   } catch (err) {
     next(err);
   }
 }
 
-// ── HOST: push verse to all viewers in a stream ───────────────────────────────
 async function pushVerse(req, res, next) {
   try {
     const streamId = req.resolvedStreamId;
@@ -122,7 +101,6 @@ async function pushVerse(req, res, next) {
       return res.status(400).json({ error: 'usfm, reference, and text are required' });
     }
 
-    // Persist to pushed_verses log
     const { rows } = await db.query(
       `INSERT INTO pushed_verses
          (stream_id, pushed_by, verse_id, reference, text, translation, bible_id)
@@ -144,7 +122,6 @@ async function pushVerse(req, res, next) {
       pushed_by_username: req.user.username,
     };
 
-    // Broadcast to every viewer in the stream room via Socket.io
     getIO().to(`stream:${streamId}`).emit('bible:verse_pushed', payload);
     res.json({ success: true, pushed: payload });
   } catch (err) {
@@ -152,7 +129,6 @@ async function pushVerse(req, res, next) {
   }
 }
 
-// ── GET pushed verse history for a stream ─────────────────────────────────────
 async function getPushedVerses(req, res, next) {
   try {
     const streamId = req.resolvedStreamId;
@@ -170,7 +146,6 @@ async function getPushedVerses(req, res, next) {
   }
 }
 
-// ── SAVE a verse to personal library ─────────────────────────────────────────
 async function saveVerse(req, res, next) {
   try {
     const { usfm, reference, text, version_id, version_name } = req.body;
@@ -201,7 +176,6 @@ async function saveVerse(req, res, next) {
   }
 }
 
-// ── GET saved verses for current user ─────────────────────────────────────────
 async function getSavedVerses(req, res, next) {
   try {
     const { rows } = await db.query(
@@ -214,7 +188,6 @@ async function getSavedVerses(req, res, next) {
   }
 }
 
-// ── DELETE a saved verse ───────────────────────────────────────────────────────
 async function deleteSavedVerse(req, res, next) {
   try {
     const { id } = req.params;
@@ -230,10 +203,12 @@ async function deleteSavedVerse(req, res, next) {
 }
 
 module.exports = {
-  getVerseOfTheDay,
+  getVerseOfTheDay: getVerseOfTheDayHandler,
   getVersions,
   getVerse,
   getChapter,
+  getIndex,
+  getStructuredChapter,
   searchVerses,
   pushVerse,
   getPushedVerses,

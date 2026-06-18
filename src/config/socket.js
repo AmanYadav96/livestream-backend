@@ -7,16 +7,22 @@ let io = null;
 let socketReady = false;
 
 function initSocket(httpServer) {
-  const origins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',');
+  const origins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map((o) => o.trim());
+  const allowAll = origins.includes('*');
 
   io = new Server(httpServer, {
+    path: '/socket.io',
     cors: {
-      origin: origins,
+      origin: allowAll ? true : origins,
       methods: ['GET', 'POST'],
-      credentials: true,
+      credentials: !allowAll,
     },
+    transports: ['polling', 'websocket'],
+    allowEIO3: true,
     pingTimeout: 60000,
     pingInterval: 25000,
+    connectTimeout: 45000,
+    maxHttpBufferSize: 1e6,
   });
 
   socketReady = true;
@@ -44,7 +50,17 @@ function initSocket(httpServer) {
     }
 
     try {
-      socket.user = await attachDbUser(await verifyWithLaravel(token));
+      const laravelUser = await verifyWithLaravel(token);
+      try {
+        socket.user = await attachDbUser(laravelUser);
+      } catch (syncErr) {
+        logger.error('Socket user sync failed', {
+          socketId: socket.id,
+          laravelId: laravelUser.id,
+          error: syncErr.message,
+        });
+        return next(new Error('Could not sync user profile, please try again'));
+      }
       logger.info('Socket auth OK', {
         socketId: socket.id,
         username: socket.user.username,

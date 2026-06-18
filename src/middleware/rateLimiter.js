@@ -7,6 +7,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:   false,
   message: { error: 'Too many requests, please slow down.' },
+  validate: { xForwardedForHeader: false },
 });
 
 /** Strict limit for chat — prevent spam/flooding */

@@ -17,8 +17,8 @@
     "express-rate-limit": "^7.1.5",
     "helmet": "^7.1.0",
     "node-cache": "^5.1.2",
-    "pg": "^8.11.3",
     "pdfkit": "^0.14.0",
+    "pg": "^8.11.3",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.0",
     "winston": "^3.11.0"

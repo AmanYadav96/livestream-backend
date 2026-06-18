@@ -1,5 +1,28 @@
 const db     = require('../config/db');
 const { getIO } = require('../config/socket');
+const { sendChatMessage } = require('../services/chatSend');
+
+// ── POST send message (REST fallback when WebSocket is unavailable) ───────────
+async function sendMessage(req, res, next) {
+  try {
+    const streamId = req.resolvedStreamId;
+    const { content } = req.body;
+
+    const { message } = await sendChatMessage({
+      streamIdRaw: streamId,
+      content,
+      user: req.user,
+    });
+
+    getIO().to(`stream:${streamId}`).emit('chat:message', message);
+    res.status(201).json({ message });
+  } catch (err) {
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    next(err);
+  }
+}
 
 // ── GET chat history for a stream ─────────────────────────────────────────────
 async function getHistory(req, res, next) {
@@ -176,6 +199,7 @@ async function getMutedUsers(req, res, next) {
 }
 
 module.exports = {
+  sendMessage,
   getHistory,
   getPinned,
   pinMessage,

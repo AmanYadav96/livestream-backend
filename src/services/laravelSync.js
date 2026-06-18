@@ -7,8 +7,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 function mapRole(role) {
   const r = (role || 'viewer').toLowerCase();
-  if (['host', 'admin', 'moderator', 'viewer'].includes(r)) return r;
-  if (r === 'administrator') return 'admin';
+  if (r === 'administrator' || r === 'demo_admin') return 'admin';
+  if (r === 'moderator') return 'admin';
+  if (['host', 'admin', 'viewer'].includes(r)) return r;
+  if (r === 'user' || r === 'provider') return 'viewer';
   return 'viewer';
 }
 
@@ -17,8 +19,7 @@ function mapRole(role) {
  */
 async function ensureUser(laravelUser) {
   const laravelId = String(laravelUser.id);
-  const username = (laravelUser.username || laravelUser.name || `user_${laravelId}`)
-    .slice(0, 50);
+  const username = (laravelUser.username || `user_${laravelId}`).slice(0, 50);
   const email = laravelUser.email || `user_${laravelId}@halobox.sync`;
 
   const { rows } = await db.query(
@@ -26,6 +27,10 @@ async function ensureUser(laravelUser) {
      VALUES ($1, $2, $3, 'synced', $4, $5)
      ON CONFLICT (laravel_user_id) DO UPDATE SET
        username   = EXCLUDED.username,
+       email      = CASE
+                      WHEN users.email LIKE 'user_%@halobox.sync' THEN EXCLUDED.email
+                      ELSE users.email
+                    END,
        avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
        role       = EXCLUDED.role,
        updated_at = NOW()
@@ -34,6 +39,33 @@ async function ensureUser(laravelUser) {
   );
 
   return rows[0];
+}
+
+const CONTENT_KEY_RE = /^(movie|tvshow|episode|video):(\d+)$/i;
+
+/**
+ * Get or create a stream row for VOD content (movie, tvshow, episode, video).
+ */
+async function ensureContentStream(contentType, contentId, title = 'Video') {
+  const type = String(contentType || '').toLowerCase().trim();
+  const id = parseInt(contentId, 10);
+  const allowed = ['movie', 'tvshow', 'episode', 'video'];
+  if (!allowed.includes(type) || !Number.isFinite(id) || id <= 0) {
+    throw Object.assign(new Error('Invalid content type or id'), { status: 400 });
+  }
+
+  const contentKey = `${type}:${id}`;
+
+  const { rows } = await db.query(
+    `INSERT INTO streams (content_key, title, host_id, is_live)
+     VALUES ($1, $2, $3, FALSE)
+     ON CONFLICT (content_key) DO UPDATE SET
+       title = EXCLUDED.title
+     RETURNING id`,
+    [contentKey, title.slice(0, 255), SYSTEM_USER_ID]
+  );
+
+  return rows[0].id;
 }
 
 /**
@@ -72,6 +104,11 @@ async function resolveStreamId(streamIdOrChannelId, title) {
     if (rows.length) return rows[0].id;
   }
 
+  const contentMatch = CONTENT_KEY_RE.exec(raw);
+  if (contentMatch) {
+    return ensureContentStream(contentMatch[1], contentMatch[2], title);
+  }
+
   const channelId = parseInt(raw, 10);
   if (Number.isFinite(channelId) && channelId > 0) {
     return ensureStream(channelId, title);
@@ -101,6 +138,7 @@ module.exports = {
   SYSTEM_USER_ID,
   ensureUser,
   ensureStream,
+  ensureContentStream,
   resolveStreamId,
   attachDbUser,
 };
