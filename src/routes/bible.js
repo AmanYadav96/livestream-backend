@@ -16,7 +16,8 @@ router.post  ('/saved',      ctrl.saveVerse);
 router.delete('/saved/:id',  ctrl.deleteSavedVerse);
 
 // ── Host only — push verse live to all stream viewers ─────────────────────────
-router.post('/:streamId/push',   requireHost, ctrl.pushVerse);
-router.get ('/:streamId/pushed',             ctrl.getPushedVerses);
+const { resolveStreamParam } = require('../middleware/resolveStream');
+router.post('/:streamId/push',   resolveStreamParam, requireHost, ctrl.pushVerse);
+router.get ('/:streamId/pushed',  resolveStreamParam,             ctrl.getPushedVerses);
 
 module.exports = router;

@@ -1,5 +1,15 @@
 const db     = require('../config/db');
 const PDFDoc = require('pdfkit');
+const { resolveStreamId } = require('../services/laravelSync');
+
+async function resolveOptionalStreamId(raw, title) {
+  if (!raw) return null;
+  return resolveStreamId(raw, title);
+}
+
+function dbUserId(req) {
+  return req.user.dbId;
+}
 
 // ── CREATE note ───────────────────────────────────────────────────────────────
 async function createNote(req, res, next) {
@@ -9,11 +19,16 @@ async function createNote(req, res, next) {
       return res.status(400).json({ error: 'Note content is required' });
     }
 
+    const resolvedStreamId = await resolveOptionalStreamId(
+      streamId,
+      req.body.streamTitle
+    );
+
     const { rows } = await db.query(
       `INSERT INTO notes (user_id, stream_id, content, stream_timestamp)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [req.user.id, streamId || null, content.trim(), streamTimestamp || null]
+      [dbUserId(req), resolvedStreamId, content.trim(), streamTimestamp || null]
     );
     res.status(201).json({ note: rows[0] });
   } catch (err) {
@@ -24,7 +39,10 @@ async function createNote(req, res, next) {
 // ── GET all notes for current user (optionally filtered by stream) ─────────────
 async function getNotes(req, res, next) {
   try {
-    const { streamId } = req.query;
+    const resolvedStreamId = await resolveOptionalStreamId(
+      req.query.streamId,
+      req.query.title
+    );
     const limit  = Math.min(parseInt(req.query.limit || '50'), 200);
     const offset = parseInt(req.query.offset || '0');
 
@@ -33,20 +51,20 @@ async function getNotes(req, res, next) {
       FROM notes n
       LEFT JOIN streams s ON s.id = n.stream_id
       WHERE n.user_id = $1
-      ${streamId ? 'AND n.stream_id = $4' : ''}
+      ${resolvedStreamId ? 'AND n.stream_id = $4' : ''}
       ORDER BY n.created_at DESC
       LIMIT $2 OFFSET $3
     `;
-    const params = streamId
-      ? [req.user.id, limit, offset, streamId]
-      : [req.user.id, limit, offset];
+    const params = resolvedStreamId
+      ? [dbUserId(req), limit, offset, resolvedStreamId]
+      : [dbUserId(req), limit, offset];
 
     const { rows } = await db.query(query, params);
 
     // Total count for pagination
     const countRes = await db.query(
-      `SELECT COUNT(*) FROM notes WHERE user_id = $1 ${streamId ? 'AND stream_id = $2' : ''}`,
-      streamId ? [req.user.id, streamId] : [req.user.id]
+      `SELECT COUNT(*) FROM notes WHERE user_id = $1 ${resolvedStreamId ? 'AND stream_id = $2' : ''}`,
+      resolvedStreamId ? [dbUserId(req), resolvedStreamId] : [dbUserId(req)]
     );
 
     res.json({
@@ -69,7 +87,7 @@ async function getNote(req, res, next) {
        FROM notes n
        LEFT JOIN streams s ON s.id = n.stream_id
        WHERE n.id = $1 AND n.user_id = $2`,
-      [id, req.user.id]
+      [id, dbUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Note not found' });
     res.json({ note: rows[0] });
@@ -89,7 +107,7 @@ async function updateNote(req, res, next) {
       `UPDATE notes SET content = $1, updated_at = NOW()
        WHERE id = $2 AND user_id = $3
        RETURNING *`,
-      [content.trim(), id, req.user.id]
+      [content.trim(), id, dbUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Note not found' });
     res.json({ note: rows[0] });
@@ -104,7 +122,7 @@ async function deleteNote(req, res, next) {
     const { id } = req.params;
     const { rows } = await db.query(
       `DELETE FROM notes WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [id, req.user.id]
+      [id, dbUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Note not found' });
     res.json({ success: true });
@@ -116,14 +134,17 @@ async function deleteNote(req, res, next) {
 // ── EXPORT notes as plain text ─────────────────────────────────────────────────
 async function exportText(req, res, next) {
   try {
-    const { streamId } = req.query;
+    const resolvedStreamId = await resolveOptionalStreamId(
+      req.query.streamId,
+      req.query.title
+    );
     const { rows } = await db.query(
       `SELECT n.content, n.stream_timestamp, n.created_at, s.title AS stream_title
        FROM notes n
        LEFT JOIN streams s ON s.id = n.stream_id
-       WHERE n.user_id = $1 ${streamId ? 'AND n.stream_id = $2' : ''}
+       WHERE n.user_id = $1 ${resolvedStreamId ? 'AND n.stream_id = $2' : ''}
        ORDER BY n.created_at ASC`,
-      streamId ? [req.user.id, streamId] : [req.user.id]
+      resolvedStreamId ? [dbUserId(req), resolvedStreamId] : [dbUserId(req)]
     );
 
     const lines = rows.map((n) => {
@@ -132,7 +153,7 @@ async function exportText(req, res, next) {
       return `[${date}]${ts}\n${n.content}\n`;
     });
 
-    const text = `MY NOTES${streamId ? ` — ${rows[0]?.stream_title || ''}` : ''}\n\n` + lines.join('\n---\n\n');
+    const text = `MY NOTES${resolvedStreamId ? ` — ${rows[0]?.stream_title || ''}` : ''}\n\n` + lines.join('\n---\n\n');
 
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="notes.txt"`);
@@ -145,14 +166,17 @@ async function exportText(req, res, next) {
 // ── EXPORT notes as PDF ────────────────────────────────────────────────────────
 async function exportPDF(req, res, next) {
   try {
-    const { streamId } = req.query;
+    const resolvedStreamId = await resolveOptionalStreamId(
+      req.query.streamId,
+      req.query.title
+    );
     const { rows } = await db.query(
       `SELECT n.content, n.stream_timestamp, n.created_at, s.title AS stream_title
        FROM notes n
        LEFT JOIN streams s ON s.id = n.stream_id
-       WHERE n.user_id = $1 ${streamId ? 'AND n.stream_id = $2' : ''}
+       WHERE n.user_id = $1 ${resolvedStreamId ? 'AND n.stream_id = $2' : ''}
        ORDER BY n.created_at ASC`,
-      streamId ? [req.user.id, streamId] : [req.user.id]
+      resolvedStreamId ? [dbUserId(req), resolvedStreamId] : [dbUserId(req)]
     );
 
     const doc = new PDFDoc({ margin: 50 });

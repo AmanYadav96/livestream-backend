@@ -4,7 +4,7 @@ const { getIO } = require('../config/socket');
 // ── GET chat history for a stream ─────────────────────────────────────────────
 async function getHistory(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const limit  = Math.min(parseInt(req.query.limit  || '50'), 200);
     const before = req.query.before; // ISO timestamp cursor for pagination
 
@@ -35,7 +35,7 @@ async function getHistory(req, res, next) {
 // ── GET pinned message for a stream ───────────────────────────────────────────
 async function getPinned(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { rows } = await db.query(
       `SELECT m.id, m.content, m.created_at,
               u.id AS user_id, u.username, u.avatar_url
@@ -109,7 +109,7 @@ async function deleteMessage(req, res, next) {
        SET is_deleted = TRUE, deleted_by = $3
        WHERE id = $1 AND stream_id = $2
        RETURNING id`,
-      [messageId, streamId, req.user.id]
+      [messageId, streamId, req.user.dbId]
     );
     if (!rows.length) {
       return res.status(404).json({ error: 'Message not found' });
@@ -124,7 +124,7 @@ async function deleteMessage(req, res, next) {
 // ── MUTE a user in a stream (host/admin only) ─────────────────────────────────
 async function muteUser(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { userId }   = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
 
@@ -132,7 +132,7 @@ async function muteUser(req, res, next) {
       `INSERT INTO muted_users (stream_id, user_id, muted_by)
        VALUES ($1, $2, $3)
        ON CONFLICT (stream_id, user_id) DO NOTHING`,
-      [streamId, userId, req.user.id]
+      [streamId, userId, req.user.dbId]
     );
 
     getIO().to(`stream:${streamId}`).emit('chat:user_muted', { userId });
@@ -145,7 +145,7 @@ async function muteUser(req, res, next) {
 // ── UNMUTE a user ─────────────────────────────────────────────────────────────
 async function unmuteUser(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { userId }   = req.body;
     await db.query(
       `DELETE FROM muted_users WHERE stream_id = $1 AND user_id = $2`,
@@ -161,7 +161,7 @@ async function unmuteUser(req, res, next) {
 // ── GET muted users for a stream ──────────────────────────────────────────────
 async function getMutedUsers(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { rows } = await db.query(
       `SELECT u.id, u.username, u.avatar_url, mu.muted_at
        FROM muted_users mu

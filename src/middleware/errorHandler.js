@@ -19,6 +19,7 @@ function errorHandler(err, req, res, next) {
 }
 
 function notFound(req, res) {
+  logger.warn('Route not found', { method: req.method, path: req.path });
   res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
 }
 

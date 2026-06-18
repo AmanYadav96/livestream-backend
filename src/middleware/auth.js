@@ -1,28 +1,46 @@
 const axios     = require('axios');
 const NodeCache = require('node-cache');
 const logger    = require('../config/logger');
+const { attachDbUser } = require('../services/laravelSync');
 
-const LARAVEL_API = process.env.LARAVEL_API_URL || 'http://localhost:8000';
-const CACHE_TTL   = parseInt(process.env.TOKEN_CACHE_TTL || '300'); // seconds
+function normalizeLaravelBaseUrl(url) {
+  let base = (url || 'http://localhost:8000').trim().replace(/\/+$/, '');
+  if (base.endsWith('/api')) base = base.slice(0, -4);
+  return base;
+}
+
+const LARAVEL_API      = normalizeLaravelBaseUrl(process.env.LARAVEL_API_URL);
+const LARAVEL_USER_PATH = process.env.LARAVEL_USER_PATH || '/api/v2/profile-details';
+const CACHE_TTL        = parseInt(process.env.TOKEN_CACHE_TTL || '300'); // seconds
+
+function unwrapStreamitUser(body) {
+  if (!body || typeof body !== 'object') return null;
+  if (body.data && typeof body.data === 'object' && body.data.id != null) {
+    return body.data;
+  }
+  if (body.id != null) return body;
+  return null;
+}
 
 // In-memory cache: token string → user object
 // Avoids calling Laravel on every single request
 const tokenCache = new NodeCache({ stdTTL: CACHE_TTL, checkperiod: 60 });
 
 /**
- * Call Laravel's /api/user endpoint with the Sanctum token.
- * Returns the user object on success, or throws on failure.
+ * Verify Bearer token against the Halobox/Streamit Laravel API.
+ * Default endpoint: GET /api/v2/profile-details (not Sanctum /api/user).
  */
 async function verifyWithLaravel(token) {
-  // Check cache first
   const cached = tokenCache.get(token);
   if (cached) {
     logger.debug('Auth cache hit');
     return cached;
   }
 
+  const url = `${LARAVEL_API}${LARAVEL_USER_PATH.startsWith('/') ? '' : '/'}${LARAVEL_USER_PATH}`;
+
   try {
-    const resp = await axios.get(`${LARAVEL_API}/api/user`, {
+    const resp = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
@@ -30,33 +48,45 @@ async function verifyWithLaravel(token) {
       timeout: 8000,
     });
 
-    const user = resp.data;
-    if (!user || !user.id) throw new Error('Invalid user response from Laravel');
+    const user = unwrapStreamitUser(resp.data);
+    if (!user || user.id == null) {
+      logger.error('Laravel auth: unexpected response shape', {
+        url,
+        keys: resp.data ? Object.keys(resp.data) : [],
+      });
+      throw new Error('Invalid user response from Laravel');
+    }
 
-    // Normalise the user shape so the rest of the Node.js app
-    // can use req.user.id, req.user.role, req.user.name consistently
+    const fullName = user.full_name
+      || [user.first_name, user.last_name].filter(Boolean).join(' ').trim()
+      || user.name
+      || user.email
+      || `user_${user.id}`;
+
     const normalised = {
       id:         user.id,
-      name:       user.name        || user.display_name || '',
-      username:   user.username    || user.name         || '',
-      email:      user.email       || '',
-      avatar_url: user.file_url    || user.avatar_url   || null,
-      role:       user.user_type   || user.role         || 'viewer',
-      // Keep the raw token so socket handlers can forward it if needed
+      name:       fullName,
+      username:   fullName,
+      email:      user.email || '',
+      avatar_url: user.profile_image || user.file_url || user.avatar_url || null,
+      role:       user.user_type || user.role || 'viewer',
       _token:     token,
     };
 
-    // Cache the result so we don't hit Laravel on every request
     tokenCache.set(token, normalised);
+    logger.debug('Laravel auth OK', { userId: normalised.id, url });
     return normalised;
 
   } catch (err) {
-    // 401 from Laravel = invalid/expired token
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 || err.response?.data?.error === 'Unauthenticated') {
       throw Object.assign(new Error('Invalid or expired token'), { status: 401 });
     }
-    // Any other error (network, timeout) — don't let the chat go down
-    logger.error('Laravel auth check failed:', err.message);
+    logger.error('Laravel auth check failed', {
+      url,
+      status: err.response?.status,
+      message: err.message,
+      laravelError: err.response?.data?.error || err.response?.data?.message,
+    });
     throw Object.assign(
       new Error('Authentication service unavailable, please try again'),
       { status: 503 }
@@ -71,13 +101,25 @@ async function verifyWithLaravel(token) {
 async function authenticate(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
+    logger.warn('HTTP auth rejected: no token', { path: req.path, method: req.method });
     return res.status(401).json({ error: 'No token provided' });
   }
   const token = header.split(' ')[1];
   try {
-    req.user = await verifyWithLaravel(token);
+    req.user = await attachDbUser(await verifyWithLaravel(token));
+    logger.debug('HTTP auth OK', {
+      path: req.path,
+      userId: req.user.id,
+      username: req.user.username,
+      role: req.user.role,
+    });
     next();
   } catch (err) {
+    logger.warn('HTTP auth failed', {
+      path: req.path,
+      status: err.status || 401,
+      error: err.message,
+    });
     res.status(err.status || 401).json({ error: err.message });
   }
 }

@@ -1,6 +1,10 @@
 const router = require('express').Router();
 const db     = require('../config/db');
 const { authenticate, requireHost } = require('../middleware/auth');
+const { resolveByChannel } = require('../controllers/streamsController');
+
+// Resolve Laravel live TV channel id → backend stream UUID (no auth required)
+router.get('/channel/:channelId', resolveByChannel);
 
 // GET all live streams
 router.get('/', async (req, res, next) => {

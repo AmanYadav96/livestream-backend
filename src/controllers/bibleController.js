@@ -115,7 +115,7 @@ async function searchVerses(req, res, next) {
 // ── HOST: push verse to all viewers in a stream ───────────────────────────────
 async function pushVerse(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { usfm, reference, text, version_id, version_name } = req.body;
 
     if (!usfm || !reference || !text) {
@@ -130,7 +130,7 @@ async function pushVerse(req, res, next) {
        RETURNING *`,
       [
         streamId,
-        req.user.id,
+        req.user.dbId,
         usfm,
         reference,
         text,
@@ -155,7 +155,7 @@ async function pushVerse(req, res, next) {
 // ── GET pushed verse history for a stream ─────────────────────────────────────
 async function getPushedVerses(req, res, next) {
   try {
-    const { streamId } = req.params;
+    const streamId = req.resolvedStreamId;
     const { rows } = await db.query(
       `SELECT pv.*, u.username AS pushed_by_username
        FROM pushed_verses pv
@@ -187,7 +187,7 @@ async function saveVerse(req, res, next) {
              text      = EXCLUDED.text
        RETURNING *`,
       [
-        req.user.id,
+        req.user.dbId,
         usfm,
         reference,
         text,
@@ -206,7 +206,7 @@ async function getSavedVerses(req, res, next) {
   try {
     const { rows } = await db.query(
       `SELECT * FROM saved_verses WHERE user_id = $1 ORDER BY created_at DESC`,
-      [req.user.id]
+      [req.user.dbId]
     );
     res.json({ savedVerses: rows });
   } catch (err) {
@@ -220,7 +220,7 @@ async function deleteSavedVerse(req, res, next) {
     const { id } = req.params;
     const { rows } = await db.query(
       `DELETE FROM saved_verses WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [id, req.user.id]
+      [id, req.user.dbId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Saved verse not found' });
     res.json({ success: true });

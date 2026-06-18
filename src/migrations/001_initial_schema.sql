@@ -3,14 +3,13 @@
 --  Features: Live Chat, Notes, Bible Integration
 -- =============================================================
 
--- Extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- UUIDs use gen_random_uuid() (built-in on PostgreSQL 13+, no extension required)
 
 -- -------------------------------------------------------------
 -- USERS
 -- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   username     VARCHAR(50)  NOT NULL UNIQUE,
   email        VARCHAR(255) NOT NULL UNIQUE,
   password     VARCHAR(255) NOT NULL,
@@ -28,7 +27,7 @@ CREATE INDEX idx_users_username ON users(username);
 -- STREAMS
 -- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS streams (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   host_id      UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title        VARCHAR(255) NOT NULL,
   description  TEXT,
@@ -45,7 +44,7 @@ CREATE INDEX idx_streams_is_live ON streams(is_live);
 -- LIVE CHAT
 -- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS chat_messages (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   stream_id    UUID         NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
   user_id      UUID         NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
   content      TEXT         NOT NULL CHECK (char_length(content) <= 500),
@@ -63,7 +62,7 @@ CREATE INDEX idx_chat_messages_pinned     ON chat_messages(stream_id, is_pinned)
 
 -- Muted users per stream
 CREATE TABLE IF NOT EXISTS muted_users (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   stream_id    UUID         NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
   user_id      UUID         NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
   muted_by     UUID         NOT NULL REFERENCES users(id),
@@ -77,7 +76,7 @@ CREATE INDEX idx_muted_users_stream ON muted_users(stream_id, user_id);
 -- NOTES
 -- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS notes (
-  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id          UUID         NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
   stream_id        UUID         REFERENCES streams(id)           ON DELETE SET NULL,
   content          TEXT         NOT NULL,
@@ -94,7 +93,7 @@ CREATE INDEX idx_notes_created   ON notes(user_id, created_at DESC);
 -- BIBLE — SAVED VERSES
 -- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS saved_verses (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id      UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   verse_id     VARCHAR(100) NOT NULL,    -- API.Bible verse ID e.g. "JHN.3.16"
   reference    VARCHAR(100) NOT NULL,    -- Human-readable e.g. "John 3:16"
@@ -119,7 +118,7 @@ CREATE INDEX idx_bible_cache_expires ON bible_cache(expires_at);
 
 -- Pushed verses (host broadcasts a verse to all viewers in a stream)
 CREATE TABLE IF NOT EXISTS pushed_verses (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   stream_id    UUID         NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
   pushed_by    UUID         NOT NULL REFERENCES users(id),
   verse_id     VARCHAR(100) NOT NULL,
